@@ -96,10 +96,11 @@ const HomeView: React.FC<HomeViewProps> = ({
       </div>
 
       {/* Main Interaction Card */}
-      <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl shadow-slate-200/60 border border-slate-200 overflow-hidden">
+      {/* FIXED: Removed overflow-hidden so the dropdown can overlay outside */}
+      <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl shadow-slate-200/60 border border-slate-200">
         
         {/* Step 1: Big Selection Cards for Exam Type */}
-        <div className="bg-slate-50 p-6 border-b border-slate-200">
+        <div className="bg-slate-50 p-6 border-b border-slate-200 rounded-t-2xl">
            <h2 className="text-center text-sm font-bold text-slate-500 uppercase tracking-wider mb-4">
              Langkah 1: Pilih Jenis Ujian
            </h2>
