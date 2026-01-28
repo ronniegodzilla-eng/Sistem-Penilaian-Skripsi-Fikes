@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Download, Table, Trash2, FileText, AlertCircle, Lock } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Download, Table, Trash2, FileText, AlertCircle, Lock, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from "jspdf";
 import autoTable from 'jspdf-autotable';
@@ -14,11 +14,22 @@ interface RecapViewProps {
   onExamTypeChange: (type: ExamType) => void;
 }
 
+type SortKey = 'name' | 'prodi' | 'p1' | 'p2' | 'e1' | 'e2' | 'total' | 'grade' | 'pass' | 'status';
+type SortDirection = 'asc' | 'desc';
+
+interface SortConfig {
+  key: SortKey | null;
+  direction: SortDirection;
+}
+
 const RecapView: React.FC<RecapViewProps> = ({ assessments, examType, students, onDeleteAssessments, onExamTypeChange }) => {
   const [selectedStudents, setSelectedStudents] = useState<Set<string>>(new Set());
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState('');
+  
+  // Sorting State
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'name', direction: 'asc' });
 
   // Helper to get score for a student and role
   const getScore = (studentId: string, role: Role): number | null => {
@@ -67,10 +78,83 @@ const RecapView: React.FC<RecapViewProps> = ({ assessments, examType, students, 
     
     const count = [p1, p2, e1, e2].filter(s => s !== null).length;
     
-    if (count === 4) return { label: 'Lengkap', class: 'bg-green-100 text-green-700' };
-    if (count > 0) return { label: 'Sebagian', class: 'bg-yellow-100 text-yellow-700' };
-    return { label: 'Belum Ada', class: 'bg-slate-100 text-slate-500' };
+    if (count === 4) return { label: 'Lengkap', class: 'bg-green-100 text-green-700', val: 2 };
+    if (count > 0) return { label: 'Sebagian', class: 'bg-yellow-100 text-yellow-700', val: 1 };
+    return { label: 'Belum Ada', class: 'bg-slate-100 text-slate-500', val: 0 };
   };
+
+  // --- SORTING LOGIC ---
+  const handleSort = (key: SortKey) => {
+    setSortConfig(current => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const sortedStudents = useMemo(() => {
+    const data = students.map(s => {
+       const p1 = getScore(s.id, Role.PEMBIMBING_1);
+       const p2 = getScore(s.id, Role.PEMBIMBING_2);
+       const e1 = getScore(s.id, Role.PENGUJI_1);
+       const e2 = getScore(s.id, Role.PENGUJI_2);
+       const final = calculateFinal(p1, p2, e1, e2);
+       const statusObj = getStatus(s.id);
+       
+       return {
+         ...s,
+         p1, p2, e1, e2, final, 
+         grade: getLetterGrade(final),
+         passStatus: getPassStatus(final),
+         statusVal: statusObj.val,
+         statusLabel: statusObj.label,
+         statusClass: statusObj.class
+       };
+    });
+
+    if (!sortConfig.key) return data;
+
+    return [...data].sort((a, b) => {
+      let aVal: any = '';
+      let bVal: any = '';
+
+      switch (sortConfig.key) {
+        case 'name': aVal = a.name.toLowerCase(); bVal = b.name.toLowerCase(); break;
+        case 'prodi': aVal = a.prodi; bVal = b.prodi; break;
+        case 'p1': aVal = a.p1 || -1; bVal = b.p1 || -1; break;
+        case 'p2': aVal = a.p2 || -1; bVal = b.p2 || -1; break;
+        case 'e1': aVal = a.e1 || -1; bVal = b.e1 || -1; break;
+        case 'e2': aVal = a.e2 || -1; bVal = b.e2 || -1; break;
+        case 'total': aVal = a.final; bVal = b.final; break;
+        case 'grade': aVal = a.final; bVal = b.final; break; // Grade sorts by score
+        case 'pass': aVal = a.passStatus; bVal = b.passStatus; break;
+        case 'status': aVal = a.statusVal; bVal = b.statusVal; break;
+        default: return 0;
+      }
+
+      if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [students, assessments, examType, sortConfig]);
+
+  const SortIcon = ({ colKey }: { colKey: SortKey }) => {
+    if (sortConfig.key !== colKey) return <ArrowUpDown className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-50" />;
+    return sortConfig.direction === 'asc' 
+      ? <ArrowUp className="w-3 h-3 text-primary-600" />
+      : <ArrowDown className="w-3 h-3 text-primary-600" />;
+  };
+
+  const HeaderCell = ({ label, colKey, className = "" }: { label: string, colKey: SortKey, className?: string }) => (
+    <th 
+      className={`px-3 py-3 cursor-pointer group hover:bg-slate-100 transition-colors select-none ${className}`}
+      onClick={() => handleSort(colKey)}
+    >
+      <div className={`flex items-center gap-1 ${className.includes('text-center') ? 'justify-center' : 'justify-start'}`}>
+        <span dangerouslySetInnerHTML={{__html: label}}></span>
+        <SortIcon colKey={colKey} />
+      </div>
+    </th>
+  );
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
@@ -131,28 +215,19 @@ const RecapView: React.FC<RecapViewProps> = ({ assessments, examType, students, 
       "Nilai Akhir", "Huruf Mutu", "Status Kelulusan", "Status Data"
     ];
 
-    const rows = students.map(s => {
-      const p1 = getScore(s.id, Role.PEMBIMBING_1);
-      const p2 = getScore(s.id, Role.PEMBIMBING_2);
-      const e1 = getScore(s.id, Role.PENGUJI_1);
-      const e2 = getScore(s.id, Role.PENGUJI_2);
-      const final = calculateFinal(p1, p2, e1, e2);
-      const letter = getLetterGrade(final);
-      const passStatus = getPassStatus(final);
-      const statusData = [p1, p2, e1, e2].every(x => x !== null) ? 'Lengkap' : 'Belum Lengkap';
-      
+    const rows = sortedStudents.map(s => {
       return [
         s.npm,
         s.name,
         s.prodi,
-        p1 !== null ? p1 : '-',
-        p2 !== null ? p2 : '-',
-        e1 !== null ? e1.toFixed(2) : '-',
-        e2 !== null ? e2.toFixed(2) : '-',
-        final.toFixed(2),
-        letter,
-        passStatus,
-        statusData
+        s.p1 !== null ? s.p1 : '-',
+        s.p2 !== null ? s.p2 : '-',
+        s.e1 !== null ? s.e1.toFixed(2) : '-',
+        s.e2 !== null ? s.e2.toFixed(2) : '-',
+        s.final.toFixed(2),
+        s.grade,
+        s.passStatus,
+        s.statusLabel
       ];
     });
 
@@ -402,31 +477,21 @@ const RecapView: React.FC<RecapViewProps> = ({ assessments, examType, students, 
                     className="w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
                  />
               </th>
-              <th className="px-4 py-3 min-w-[200px]">Mahasiswa</th>
-              <th className="px-3 py-3 whitespace-nowrap">Prodi</th>
-              <th className="px-2 py-3 text-center whitespace-nowrap">P. 1<br/><span className="text-[10px] text-slate-500">(35%)</span></th>
-              <th className="px-2 py-3 text-center whitespace-nowrap">P. 2<br/><span className="text-[10px] text-slate-500">(25%)</span></th>
-              <th className="px-2 py-3 text-center whitespace-nowrap">Uji 1<br/><span className="text-[10px] text-slate-500">(20%)</span></th>
-              <th className="px-2 py-3 text-center whitespace-nowrap">Uji 2<br/><span className="text-[10px] text-slate-500">(20%)</span></th>
-              <th className="px-3 py-3 text-center font-bold text-primary-700 whitespace-nowrap">Total</th>
-              <th className="px-3 py-3 text-center whitespace-nowrap">Mutu</th>
-              <th className="px-3 py-3 text-center whitespace-nowrap">Kelulusan</th>
-              <th className="px-3 py-3 text-center whitespace-nowrap">Status Data</th>
+              <HeaderCell label="Mahasiswa" colKey="name" className="min-w-[200px]" />
+              <HeaderCell label="Prodi" colKey="prodi" className="whitespace-nowrap" />
+              <HeaderCell label="P. 1<br/><span class='text-[10px] text-slate-500'>(35%)</span>" colKey="p1" className="text-center whitespace-nowrap" />
+              <HeaderCell label="P. 2<br/><span class='text-[10px] text-slate-500'>(25%)</span>" colKey="p2" className="text-center whitespace-nowrap" />
+              <HeaderCell label="Uji 1<br/><span class='text-[10px] text-slate-500'>(20%)</span>" colKey="e1" className="text-center whitespace-nowrap" />
+              <HeaderCell label="Uji 2<br/><span class='text-[10px] text-slate-500'>(20%)</span>" colKey="e2" className="text-center whitespace-nowrap" />
+              <HeaderCell label="Total" colKey="total" className="text-center font-bold text-primary-700 whitespace-nowrap" />
+              <HeaderCell label="Mutu" colKey="grade" className="text-center whitespace-nowrap" />
+              <HeaderCell label="Kelulusan" colKey="pass" className="text-center whitespace-nowrap" />
+              <HeaderCell label="Status Data" colKey="status" className="text-center whitespace-nowrap" />
               <th className="px-3 py-3 text-center sticky right-0 bg-slate-50 z-20 shadow-[-5px_0px_5px_-5px_rgba(0,0,0,0.1)] whitespace-nowrap">Aksi</th>
             </tr>
           </thead>
           <tbody>
-            {students.map((student) => {
-               const p1 = getScore(student.id, Role.PEMBIMBING_1);
-               const p2 = getScore(student.id, Role.PEMBIMBING_2);
-               const e1 = getScore(student.id, Role.PENGUJI_1);
-               const e2 = getScore(student.id, Role.PENGUJI_2);
-               const final = calculateFinal(p1, p2, e1, e2);
-               const status = getStatus(student.id);
-               const letter = getLetterGrade(final);
-               const passStatus = getPassStatus(final);
-
-               return (
+            {sortedStudents.map((student) => (
                 <tr key={student.id} className={`border-b hover:bg-slate-50 ${selectedStudents.has(student.id) ? 'bg-blue-50' : 'bg-white'}`}>
                   <td className="px-3 py-4 sticky left-0 z-10 bg-inherit border-r sm:border-r-0 border-slate-100">
                      <input 
@@ -446,47 +511,47 @@ const RecapView: React.FC<RecapViewProps> = ({ assessments, examType, students, 
                     </span>
                   </td>
                   <td className="px-2 py-4 text-center whitespace-nowrap">
-                    {p1 !== null ? (
+                    {student.p1 !== null ? (
                         <div className="flex items-center justify-center gap-1 text-green-600 font-medium">
-                            {p1}
+                            {student.p1}
                         </div>
                     ) : <span className="text-slate-300">-</span>}
                   </td>
                    <td className="px-2 py-4 text-center whitespace-nowrap">
-                    {p2 !== null ? (
+                    {student.p2 !== null ? (
                         <div className="flex items-center justify-center gap-1 text-green-600 font-medium">
-                            {p2}
+                            {student.p2}
                         </div>
                     ) : <span className="text-slate-300">-</span>}
                   </td>
                    <td className="px-2 py-4 text-center whitespace-nowrap">
-                    {e1 !== null ? (
+                    {student.e1 !== null ? (
                         <div className="flex items-center justify-center gap-1 text-green-600 font-medium">
-                            {e1.toFixed(0)}
+                            {student.e1.toFixed(0)}
                         </div>
                     ) : <span className="text-slate-300">-</span>}
                   </td>
                    <td className="px-2 py-4 text-center whitespace-nowrap">
-                    {e2 !== null ? (
+                    {student.e2 !== null ? (
                         <div className="flex items-center justify-center gap-1 text-green-600 font-medium">
-                            {e2.toFixed(0)}
+                            {student.e2.toFixed(0)}
                         </div>
                     ) : <span className="text-slate-300">-</span>}
                   </td>
                   <td className="px-3 py-4 text-center font-bold text-base text-primary-700 whitespace-nowrap">
-                    {final.toFixed(2)}
+                    {student.final.toFixed(2)}
                   </td>
                   <td className="px-3 py-4 text-center font-semibold text-slate-700 whitespace-nowrap">
-                    {letter}
+                    {student.grade}
                   </td>
                   <td className="px-3 py-4 text-center whitespace-nowrap">
-                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold border ${passStatus === 'LULUS' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                      {passStatus}
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold border ${student.passStatus === 'LULUS' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                      {student.passStatus}
                     </span>
                   </td>
                   <td className="px-3 py-4 text-center whitespace-nowrap">
-                    <span className={`px-2 py-1 rounded-full text-[10px] font-medium border ${status.label === 'Lengkap' ? 'bg-blue-50 text-blue-700 border-blue-200' : status.label === 'Sebagian' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                      {status.label}
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-medium border ${student.statusLabel === 'Lengkap' ? 'bg-blue-50 text-blue-700 border-blue-200' : student.statusLabel === 'Sebagian' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                      {student.statusLabel}
                     </span>
                   </td>
                   <td className="px-3 py-4 text-center sticky right-0 bg-inherit z-10 shadow-[-5px_0px_5px_-5px_rgba(0,0,0,0.1)] border-l border-slate-100 whitespace-nowrap">
@@ -508,8 +573,7 @@ const RecapView: React.FC<RecapViewProps> = ({ assessments, examType, students, 
                     </div>
                   </td>
                 </tr>
-               );
-            })}
+            ))}
           </tbody>
         </table>
       </div>

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ChevronRight, GraduationCap, FileText, User, School, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ChevronRight, GraduationCap, FileText, User, School, CheckCircle2, Search, ChevronDown, Check } from 'lucide-react';
 import { Role, Student, ExamType } from '../types';
 import { LOGO_URL } from '../constants';
 
@@ -21,14 +21,47 @@ const HomeView: React.FC<HomeViewProps> = ({
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [logoError, setLogoError] = useState(false);
 
+  // Searchable Dropdown State
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Reset search and selection when prodi changes
+  useEffect(() => {
+    setSelectedStudentId('');
+    setSearchTerm('');
+  }, [selectedProdi]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const filteredStudents = selectedProdi
-    ? students.filter(s => s.prodi === selectedProdi)
+    ? students.filter(s => {
+        const matchesProdi = s.prodi === selectedProdi;
+        const matchesSearch = s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                              s.npm.toLowerCase().includes(searchTerm.toLowerCase());
+        return matchesProdi && matchesSearch;
+      })
     : [];
 
   const handleStart = () => {
     if (selectedRole && selectedStudentId) {
       onStartAssessment(selectedRole, selectedStudentId);
     }
+  };
+
+  const handleSelectStudent = (student: Student) => {
+    setSelectedStudentId(student.id);
+    setSearchTerm(student.name);
+    setIsDropdownOpen(false);
   };
 
   return (
@@ -163,7 +196,6 @@ const HomeView: React.FC<HomeViewProps> = ({
                             value={selectedProdi}
                             onChange={(e) => {
                                 setSelectedProdi(e.target.value);
-                                setSelectedStudentId('');
                             }}
                             className="w-full p-3 pl-4 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all text-slate-900 font-medium appearance-none"
                         >
@@ -177,30 +209,64 @@ const HomeView: React.FC<HomeViewProps> = ({
                     </div>
                 </div>
 
-                {/* Student Selection */}
-                <div className="space-y-2">
+                {/* Student Selection (Searchable Dropdown) */}
+                <div className="space-y-2 relative" ref={dropdownRef}>
                     <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
                         <GraduationCap className="w-4 h-4 text-slate-400" />
                         Mahasiswa
                     </label>
-                    <div className="relative">
-                        <select
-                            value={selectedStudentId}
-                            onChange={(e) => setSelectedStudentId(e.target.value)}
+                    
+                    <div 
+                        onClick={() => !(!selectedProdi) && setIsDropdownOpen(true)}
+                        className={`relative w-full ${!selectedProdi ? 'cursor-not-allowed opacity-60' : 'cursor-text'}`}
+                    >
+                        <input
+                            type="text"
+                            value={searchTerm}
+                            onChange={(e) => {
+                                setSearchTerm(e.target.value);
+                                setIsDropdownOpen(true);
+                                setSelectedStudentId(''); // Clear selection when typing
+                            }}
+                            placeholder={selectedProdi ? "Ketik Nama Mahasiswa..." : "-- Pilih Prodi Dulu --"}
                             disabled={!selectedProdi}
-                            className="w-full p-3 pl-4 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 font-medium appearance-none"
-                        >
-                            <option value="">
-                                {selectedProdi ? '-- Pilih Nama Mahasiswa --' : '-- Pilih Prodi Dulu --'}
-                            </option>
-                            {filteredStudents.map(s => (
-                                <option key={s.id} value={s.id}>{s.name} - {s.npm}</option>
-                            ))}
-                        </select>
-                         <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-                           <ChevronRight className="w-4 h-4 rotate-90" />
+                            className={`w-full p-3 pl-9 rounded-lg border ${isDropdownOpen ? 'border-primary-500 ring-2 ring-primary-500' : 'border-slate-300'} bg-slate-50 focus:bg-white transition-all text-slate-900 font-medium`}
+                            onFocus={() => selectedProdi && setIsDropdownOpen(true)}
+                        />
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                            <Search className="w-4 h-4" />
+                        </div>
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none">
+                            <ChevronDown className={`w-4 h-4 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
                         </div>
                     </div>
+
+                    {/* Dropdown List */}
+                    {isDropdownOpen && selectedProdi && (
+                        <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-60 overflow-y-auto custom-scrollbar">
+                            {filteredStudents.length === 0 ? (
+                                <div className="p-3 text-sm text-slate-500 text-center italic">
+                                    Tidak ada mahasiswa ditemukan.
+                                </div>
+                            ) : (
+                                filteredStudents.map(student => (
+                                    <button
+                                        key={student.id}
+                                        onClick={() => handleSelectStudent(student)}
+                                        className="w-full text-left px-4 py-3 hover:bg-primary-50 transition-colors border-b border-slate-50 last:border-0 flex justify-between items-center group"
+                                    >
+                                        <div>
+                                            <div className="font-medium text-slate-800 group-hover:text-primary-700">{student.name}</div>
+                                            <div className="text-xs text-slate-500">{student.npm}</div>
+                                        </div>
+                                        {selectedStudentId === student.id && (
+                                            <Check className="w-4 h-4 text-primary-600" />
+                                        )}
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 
