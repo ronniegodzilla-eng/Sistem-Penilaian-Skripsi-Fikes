@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { GraduationCap, LayoutDashboard, Database, X, Lock, Home, PieChart, RefreshCw, WifiOff } from 'lucide-react';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { db, isDemoMode } from './firebase';
+import { supabase, isDemoMode } from './supabaseClient';
 import HomeView from './components/HomeView';
 import SupervisorForm from './components/SupervisorForm';
 import ExaminerForm from './components/ExaminerForm';
@@ -35,65 +34,59 @@ const App: React.FC = () => {
   const [loginForm, setLoginForm] = useState({ user: '', pass: '' });
   const [loginError, setLoginError] = useState('');
 
-  // 1. Subscribe to 'students' collection
-  useEffect(() => {
-    if (isDemoMode) {
-        // DEMO MODE: Load static data directly
-        console.log("App running in Demo Mode");
+  // --- DATA FETCHING (SUPABASE) ---
+
+  const fetchData = useCallback(async () => {
+    if (isDemoMode || !supabase) {
         setStudents(INITIAL_STUDENTS.sort((a, b) => a.name.localeCompare(b.name)));
         setLoading(false);
         return;
     }
 
-    const unsubscribe = onSnapshot(collection(db, "students"), (snapshot) => {
-      const fetchedStudents: Student[] = [];
-      snapshot.forEach((doc) => {
-        fetchedStudents.push(doc.data() as Student);
-      });
-      // Sort by Name alphabetically
-      fetchedStudents.sort((a, b) => a.name.localeCompare(b.name));
-      setStudents(fetchedStudents);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching students:", error);
-      setLoading(false);
-    });
+    setLoading(true);
+    try {
+        // Fetch Students
+        const { data: studentsData, error: studentsError } = await supabase
+            .from('students')
+            .select('*')
+            .order('name', { ascending: true });
+        
+        if (studentsError) throw studentsError;
 
-    return () => unsubscribe();
-  }, []);
+        // Fetch Assessments
+        const { data: assessmentsData, error: assessmentsError } = await supabase
+            .from('assessments')
+            .select('*');
 
-  // 2. Subscribe to 'assessments' collection
-  useEffect(() => {
-    if (isDemoMode) {
-        // DEMO MODE: No initial assessments (or could load from localStorage if desired)
+        if (assessmentsError) throw assessmentsError;
+
+        if (studentsData) setStudents(studentsData as Student[]);
+        if (assessmentsData) setAssessments(assessmentsData as Assessment[]);
+
+    } catch (error) {
+        console.error("Error fetching data from Supabase:", error);
+        alert("Gagal mengambil data dari server. Mode Offline aktif.");
+    } finally {
         setLoading(false);
-        return;
     }
-
-    const unsubscribe = onSnapshot(collection(db, "assessments"), (snapshot) => {
-      const fetchedAssessments: Assessment[] = [];
-      snapshot.forEach((doc) => {
-        fetchedAssessments.push(doc.data() as Assessment);
-      });
-      setAssessments(fetchedAssessments);
-    }, (error) => {
-      console.error("Error fetching assessments:", error);
-    });
-
-    return () => unsubscribe();
   }, []);
 
-  // 4. Security: Auto-lock database when navigating away
+  // Initial Load
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Security: Auto-lock database when navigating away
   useEffect(() => {
     if (currentView !== 'database') {
       setIsDatabaseUnlocked(false);
     }
   }, [currentView]);
 
-  // --- FIRESTORE ACTIONS ---
+  // --- SUPABASE ACTIONS ---
 
   const handleSaveAssessment = async (newAssessment: Assessment) => {
-    if (isDemoMode) {
+    if (isDemoMode || !supabase) {
         setAssessments(prev => {
             const idx = prev.findIndex(a => a.id === newAssessment.id);
             if (idx !== -1) {
@@ -103,106 +96,132 @@ const App: React.FC = () => {
             }
             return [...prev, newAssessment];
         });
-        alert("Mode Demo: Data tersimpan di memori browser (akan hilang saat refresh).");
+        alert("Mode Demo: Data tersimpan di memori browser.");
         return;
     }
 
     try {
-      await setDoc(doc(db, "assessments", newAssessment.id), newAssessment);
-    } catch (e) {
-      alert("Gagal menyimpan nilai ke server: " + e);
+      const { error } = await supabase
+        .from('assessments')
+        .upsert(newAssessment);
+      
+      if (error) throw error;
+      
+      // Refresh local state
+      fetchData();
+    } catch (e: any) {
+      alert("Gagal menyimpan nilai ke Supabase: " + e.message);
     }
   };
 
   const handleDeleteAssessments = async (studentIds: string[], type: ExamType) => {
-    if (isDemoMode) {
+    if (isDemoMode || !supabase) {
         setAssessments(prev => prev.filter(a => !(studentIds.includes(a.studentId) && a.examType === type)));
         return;
     }
 
-    const batch = writeBatch(db);
-    // Find assessments to delete
-    const toDelete = assessments.filter(a => 
-      studentIds.includes(a.studentId) && a.examType === type
-    );
+    // Find IDs to delete based on filters
+    const idsToDelete = assessments
+        .filter(a => studentIds.includes(a.studentId) && a.examType === type)
+        .map(a => a.id);
 
-    toDelete.forEach(a => {
-      batch.delete(doc(db, "assessments", a.id));
-    });
+    if (idsToDelete.length === 0) return;
 
     try {
-      await batch.commit();
-    } catch (e) {
-      alert("Gagal menghapus nilai: " + e);
+      const { error } = await supabase
+        .from('assessments')
+        .delete()
+        .in('id', idsToDelete);
+
+      if (error) throw error;
+
+      fetchData();
+    } catch (e: any) {
+      alert("Gagal menghapus nilai: " + e.message);
     }
   };
 
   // --- CRUD Actions for DatabaseView ---
 
   const handleAddStudent = async (student: Student) => {
-    if (isDemoMode) {
+    if (isDemoMode || !supabase) {
         setStudents(prev => [...prev, student].sort((a, b) => a.name.localeCompare(b.name)));
         return;
     }
 
     try {
-      await setDoc(doc(db, "students", student.id), student);
-    } catch (e) {
+      const { error } = await supabase
+        .from('students')
+        .insert(student);
+      
+      if (error) throw error;
+      fetchData();
+    } catch (e: any) {
       console.error("Error adding student", e);
-      alert("Gagal menambah mahasiswa");
+      alert("Gagal menambah mahasiswa: " + e.message);
     }
   };
 
   const handleUpdateStudent = async (student: Student) => {
-    if (isDemoMode) {
+    if (isDemoMode || !supabase) {
         setStudents(prev => prev.map(s => s.id === student.id ? student : s));
         return;
     }
 
     try {
-      await setDoc(doc(db, "students", student.id), student);
-    } catch (e) {
+      const { error } = await supabase
+        .from('students')
+        .update(student)
+        .eq('id', student.id);
+
+      if (error) throw error;
+      fetchData();
+    } catch (e: any) {
       console.error("Error updating student", e);
-      alert("Gagal update mahasiswa");
+      alert("Gagal update mahasiswa: " + e.message);
     }
   };
 
   const handleDeleteStudent = async (id: string) => {
-    if (isDemoMode) {
+    if (isDemoMode || !supabase) {
         setStudents(prev => prev.filter(s => s.id !== id));
         return;
     }
 
     try {
-      await deleteDoc(doc(db, "students", id));
-    } catch (e) {
+      const { error } = await supabase
+        .from('students')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      fetchData();
+    } catch (e: any) {
       console.error("Error deleting student", e);
-      alert("Gagal hapus mahasiswa");
+      alert("Gagal hapus mahasiswa: " + e.message);
     }
   };
 
   const handleImportStudents = async (newStudents: Student[]) => {
-    if (isDemoMode) {
+    if (isDemoMode || !supabase) {
         setStudents(prev => {
-             // Simple merge logic for demo
              const combined = [...prev, ...newStudents];
-             // Remove duplicates based on ID if any (simplified)
              return combined.sort((a, b) => a.name.localeCompare(b.name));
         });
-        alert(`Mode Demo: ${newStudents.length} data ditambahkan ke memori.`);
+        alert(`Mode Demo: ${newStudents.length} data ditambahkan.`);
         return;
     }
 
     try {
-      const batch = writeBatch(db);
-      newStudents.forEach(s => {
-        const ref = doc(db, "students", s.id);
-        batch.set(ref, s);
-      });
-      await batch.commit();
-    } catch (e) {
+      const { error } = await supabase
+        .from('students')
+        .upsert(newStudents);
+
+      if (error) throw error;
+      fetchData();
+    } catch (e: any) {
       console.error("Error import", e);
-      alert("Gagal import data: " + e);
+      alert("Gagal import data: " + e.message);
     }
   };
 
@@ -234,7 +253,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 gap-2">
         <RefreshCw className="w-6 h-6 animate-spin" />
-        <span>Menghubungkan ke Database...</span>
+        <span>Menghubungkan ke Supabase...</span>
       </div>
     );
   }
@@ -326,9 +345,9 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       {/* Demo Mode Banner */}
       {isDemoMode && (
-         <div className="bg-orange-500 text-white text-xs font-bold text-center py-1 px-4 flex items-center justify-center gap-2">
+         <div className="bg-emerald-600 text-white text-xs font-bold text-center py-1 px-4 flex items-center justify-center gap-2">
             <WifiOff className="w-3 h-3" />
-            MODE DEMO (OFFLINE): Data tidak akan tersimpan ke cloud. Setup Firebase (.env) untuk mengaktifkan database online.
+            MODE DEMO (OFFLINE): Menggunakan data lokal. Setup Supabase (.env) untuk online database.
          </div>
       )}
 
