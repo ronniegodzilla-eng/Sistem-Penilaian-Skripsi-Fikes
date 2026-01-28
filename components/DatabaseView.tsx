@@ -1,17 +1,28 @@
 import React, { useState, useRef } from 'react';
-import { Database, Plus, Edit2, Trash2, Search, X, Save, Upload, FileText } from 'lucide-react';
+import { Database, Plus, Edit2, Trash2, Search, X, Save, Upload, FileText, Loader2 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { Student } from '../types';
 
 interface DatabaseViewProps {
   students: Student[];
-  onUpdateStudents: (students: Student[]) => void;
+  onAddStudent: (student: Student) => void;
+  onUpdateStudent: (student: Student) => void;
+  onDeleteStudent: (id: string) => void;
+  onImportStudents: (students: Student[]) => void;
 }
 
-const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents }) => {
+const DatabaseView: React.FC<DatabaseViewProps> = ({ 
+    students, 
+    onAddStudent, 
+    onUpdateStudent, 
+    onDeleteStudent,
+    onImportStudents 
+}) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Student>>({});
   const [isAdding, setIsAdding] = useState(false);
+  const [processing, setProcessing] = useState(false); // To show loading state during imports
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Default add form state
@@ -32,10 +43,9 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
     s.npm.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const handleDelete = (id: string) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus data mahasiswa ini?')) {
-      const updated = students.filter(s => s.id !== id);
-      onUpdateStudents(updated);
+  const handleDelete = async (id: string) => {
+    if (window.confirm('Apakah Anda yakin ingin menghapus data mahasiswa ini dari database cloud?')) {
+      onDeleteStudent(id);
     }
   };
 
@@ -49,18 +59,18 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
     setEditForm({});
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editForm.name || !editForm.npm) return;
-    const updated = students.map(s => s.id === isEditing ? { ...s, ...editForm } as Student : s);
-    onUpdateStudents(updated);
+    const updatedStudent = { ...students.find(s => s.id === isEditing), ...editForm } as Student;
+    onUpdateStudent(updatedStudent);
     setIsEditing(null);
     setEditForm({});
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!addForm.name || !addForm.npm) return;
     const newStudent: Student = {
-      id: `new-${Date.now()}`,
+      id: `std-${Date.now()}`,
       name: addForm.name || '',
       npm: addForm.npm || '',
       prodi: addForm.prodi || 'K3',
@@ -70,7 +80,7 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
       penguji1: addForm.penguji1 || '',
       penguji2: addForm.penguji2 || ''
     };
-    onUpdateStudents([...students, newStudent]);
+    onAddStudent(newStudent);
     setIsAdding(false);
     setAddForm(defaultForm);
   };
@@ -79,91 +89,95 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setProcessing(true);
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      if (!text) return;
-
-      const lines = text.split('\n');
-      // Skip header row
-      const newStudents: Student[] = [];
-      
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        
-        // Simple CSV parse (handling potential commas in quotes would require a stronger parser, 
-        // but simple split is okay for basic names)
-        // Improved split to handle quoted fields somewhat better
-        const cols = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || line.split(',');
-        const cleanCols = cols.map(c => c.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
-        
-        if (cleanCols.length >= 2) {
-           // Expected format: Nama, NPM, Prodi, Judul, P1, P2, U1, U2
-           newStudents.push({
-             id: `import-${Date.now()}-${i}`,
-             name: cleanCols[0] || 'Unknown',
-             npm: cleanCols[1] || 'Unknown',
-             prodi: cleanCols[2] || 'K3',
-             title: cleanCols[3] || '-',
-             pembimbing1: cleanCols[4] || '',
-             pembimbing2: cleanCols[5] || '',
-             penguji1: cleanCols[6] || '',
-             penguji2: cleanCols[7] || ''
-           });
-        }
+    reader.onload = async (event) => {
+      const data = event.target?.result;
+      if (!data) {
+          setProcessing(false);
+          return;
       }
 
-      if (newStudents.length > 0) {
-        if (window.confirm(`Ditemukan ${newStudents.length} data. Tambahkan ke database? (Data duplikat tidak dicek otomatis)`)) {
-          onUpdateStudents([...students, ...newStudents]);
-          alert('Data berhasil diimpor!');
+      try {
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+
+        const studentsToImport: Student[] = [];
+        
+        let currentStudents = [...students];
+        const studentMap = new Map(currentStudents.map((s) => [s.npm.trim().toLowerCase(), s]));
+
+        // Skip header row (start from i=1)
+        for (let i = 1; i < jsonData.length; i++) {
+            const cols = jsonData[i];
+            if (!cols || cols.length === 0) continue;
+
+            // Mapping based on Template order:
+            // 0:Nama, 1:NPM, 2:Prodi, 3:Judul, 4:P1, 5:P2, 6:U1, 7:U2
+            const excelData = {
+                name: cols[0] ? String(cols[0]).trim() : '',
+                npm: cols[1] ? String(cols[1]).trim() : '',
+                prodi: cols[2] ? String(cols[2]).trim() : 'K3',
+                title: cols[3] ? String(cols[3]).trim() : '-',
+                pembimbing1: cols[4] ? String(cols[4]).trim() : '',
+                pembimbing2: cols[5] ? String(cols[5]).trim() : '',
+                penguji1: cols[6] ? String(cols[6]).trim() : '',
+                penguji2: cols[7] ? String(cols[7]).trim() : ''
+            };
+
+            if (!excelData.npm) continue; // Skip if no NPM
+
+            const npmKey = excelData.npm.toLowerCase();
+
+            // Logic: If exist, we use the EXISTING ID to allow overwrite, otherwise generate new ID
+            const existing = studentMap.get(npmKey);
+            const idToUse = existing ? existing.id : `import-${Date.now()}-${i}`;
+
+            const studentObj: Student = {
+                id: idToUse,
+                name: excelData.name,
+                npm: excelData.npm,
+                prodi: excelData.prodi,
+                title: excelData.title,
+                pembimbing1: excelData.pembimbing1,
+                pembimbing2: excelData.pembimbing2,
+                penguji1: excelData.penguji1,
+                penguji2: excelData.penguji2
+            };
+            studentsToImport.push(studentObj);
         }
-      } else {
-        alert('Gagal membaca format CSV atau file kosong.');
+
+        if (studentsToImport.length > 0) {
+            // Trigger batch import in App.tsx
+            onImportStudents(studentsToImport);
+            alert(`Berhasil memproses ${studentsToImport.length} data. Sedang mengirim ke database...`);
+        } else {
+            alert('File kosong atau tidak ada data valid.');
+        }
+
+      } catch (error) {
+          console.error("Excel processing error:", error);
+          alert("Gagal membaca file Excel. Pastikan format file benar (.xlsx).");
+      } finally {
+          setProcessing(false);
       }
     };
-    reader.readAsText(file);
-    // Reset file input
+    
+    reader.readAsArrayBuffer(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const downloadTemplate = () => {
-    // Generate CSV from current students data
     const headers = ["Nama", "NPM", "Prodi", "Judul Skripsi", "Pembimbing 1", "Pembimbing 2", "Penguji 1", "Penguji 2"];
-    
-    // Function to escape CSV fields
-    const escapeCsv = (field: string) => {
-      if (!field) return '';
-      if (field.includes(',') || field.includes('"') || field.includes('\n')) {
-        return `"${field.replace(/"/g, '""')}"`;
-      }
-      return field;
-    };
-
-    const rows = students.map(s => [
-      escapeCsv(s.name),
-      escapeCsv(s.npm),
-      escapeCsv(s.prodi),
-      escapeCsv(s.title),
-      escapeCsv(s.pembimbing1),
-      escapeCsv(s.pembimbing2),
-      escapeCsv(s.penguji1),
-      escapeCsv(s.penguji2)
-    ]);
-
-    const csvContent = [
-      headers.join(","),
-      ...rows.map(r => r.join(","))
-    ].join("\n");
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `database_mahasiswa_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-    document.body.removeChild(a);
+    const data = [[ "Contoh Nama", "12345678", "K3", "Analisis Risiko K3", "Dosen A", "Dosen B", "Dosen C", "Dosen D"]];
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+    ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 40 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 20 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Database Mahasiswa");
+    XLSX.writeFile(wb, `Template_Database.xlsx`);
   };
 
   return (
@@ -173,9 +187,9 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
         <div>
           <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
             <Database className="w-5 h-5 text-primary-600" />
-            Database Mahasiswa
+            Database Mahasiswa (Cloud)
           </h2>
-          <p className="text-slate-500 text-sm">Kelola data mahasiswa, dosen, dan judul</p>
+          <p className="text-slate-500 text-sm">Data tersimpan aman dan realtime di server.</p>
         </div>
         <div className="flex gap-2 w-full md:w-auto flex-wrap justify-end">
           <div className="relative">
@@ -191,24 +205,25 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
           
           <button onClick={downloadTemplate} className="flex items-center gap-2 bg-white border border-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50">
             <FileText className="w-4 h-4" />
-            Unduh Data (CSV)
+            Template
           </button>
           
           <div className="relative">
              <input 
                type="file" 
-               accept=".csv"
+               accept=".xlsx, .xls"
                ref={fileInputRef}
                onChange={handleFileUpload}
                className="hidden"
-               id="csv-upload"
+               id="excel-upload"
+               disabled={processing}
              />
              <label 
-               htmlFor="csv-upload" 
-               className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors"
+               htmlFor="excel-upload" 
+               className={`flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors ${processing ? 'opacity-50 cursor-wait' : ''}`}
              >
-               <Upload className="w-4 h-4" />
-               Impor CSV
+               {processing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+               Impor
              </label>
           </div>
 
@@ -352,7 +367,7 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({ students, onUpdateStudents 
         </table>
       </div>
       <div className="bg-slate-50 p-3 border-t border-slate-200 text-xs text-slate-500 flex justify-between">
-        <span>Total: {filteredStudents.length} Mahasiswa</span>
+        <span>Total: {filteredStudents.length} Mahasiswa (Sync Cloud)</span>
         <span>Menampilkan hasil pencarian untuk "{searchTerm}"</span>
       </div>
     </div>

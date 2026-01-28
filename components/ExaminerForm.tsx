@@ -22,7 +22,8 @@ const ExaminerForm: React.FC<ExaminerFormProps> = ({ examType, role, student, ex
   const [isSaved, setIsSaved] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
-  // Load existing data
+  // Load existing data ON MOUNT ONLY
+  // Removed 'existingAssessments' from dependency array to support parallel non-destructive editing
   useEffect(() => {
     if (student) {
       const found = existingAssessments.find(
@@ -36,7 +37,8 @@ const ExaminerForm: React.FC<ExaminerFormProps> = ({ examType, role, student, ex
         setIsSaved(false);
       }
     }
-  }, [student, role, examType, existingAssessments]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [student, role, examType]);
 
   const calculateTotal = (): number => {
     return (

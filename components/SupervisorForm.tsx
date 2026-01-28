@@ -32,7 +32,9 @@ const SupervisorForm: React.FC<SupervisorFormProps> = ({ examType, role, student
     setScores(initialScores);
   }, []);
 
-  // Check for existing data
+  // Check for existing data ON MOUNT ONLY
+  // Removing 'existingAssessments' from dependency array to prevent 
+  // parallel updates from other tabs wiping out local unsaved changes.
   useEffect(() => {
     if (student) {
       const found = existingAssessments.find(
@@ -45,14 +47,15 @@ const SupervisorForm: React.FC<SupervisorFormProps> = ({ examType, role, student
         }
         setIsSaved(true);
       } else {
-         // Reset
+         // Reset for new student
          const resetScores: SupervisorScore = {};
          SUPERVISOR_RUBRIC_ITEMS.forEach((_, index) => resetScores[index] = 0);
          setScores(resetScores);
          setIsSaved(false);
       }
     }
-  }, [student, role, examType, existingAssessments]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [student, role, examType]); 
 
 
   const calculateTotal = (): number => {
