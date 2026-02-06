@@ -202,6 +202,26 @@ const App: React.FC = () => {
     }
   };
 
+  const handleDeleteStudents = async (ids: string[]) => {
+    if (isDemoMode || !supabase) {
+        setStudents(prev => prev.filter(s => !ids.includes(s.id)));
+        return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('students')
+        .delete()
+        .in('id', ids);
+
+      if (error) throw error;
+      fetchData();
+    } catch (e: any) {
+      console.error("Error deleting students", e);
+      alert("Gagal hapus data massal: " + e.message);
+    }
+  };
+
   const handleImportStudents = async (newStudents: Student[]) => {
     if (isDemoMode || !supabase) {
         setStudents(prev => {
@@ -324,6 +344,7 @@ const App: React.FC = () => {
             onAddStudent={handleAddStudent}
             onUpdateStudent={handleUpdateStudent}
             onDeleteStudent={handleDeleteStudent}
+            onDeleteStudents={handleDeleteStudents}
             onImportStudents={handleImportStudents}
           />
         );
