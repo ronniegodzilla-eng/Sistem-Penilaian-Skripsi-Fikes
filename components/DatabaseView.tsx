@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { Database, Plus, Edit2, Trash2, Search, X, Save, Upload, FileText, Loader2 } from 'lucide-react';
+import React, { useState, useRef, useMemo } from 'react';
+import { Database, Plus, Edit2, Trash2, Search, X, Save, Upload, FileText, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student } from '../types';
 
@@ -8,7 +8,16 @@ interface DatabaseViewProps {
   onAddStudent: (student: Student) => void;
   onUpdateStudent: (student: Student) => void;
   onDeleteStudent: (id: string) => void;
+  onDeleteStudents?: (ids: string[]) => void;
   onImportStudents: (students: Student[]) => void;
+}
+
+type SortKey = keyof Student;
+type SortDirection = 'asc' | 'desc';
+
+interface SortConfig {
+  key: SortKey | null;
+  direction: SortDirection;
 }
 
 const DatabaseView: React.FC<DatabaseViewProps> = ({ 
@@ -16,16 +25,21 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
     onAddStudent, 
     onUpdateStudent, 
     onDeleteStudent,
+    onDeleteStudents,
     onImportStudents 
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Student>>({});
   const [isAdding, setIsAdding] = useState(false);
-  const [processing, setProcessing] = useState(false); // To show loading state during imports
+  const [processing, setProcessing] = useState(false);
+  
+  // Sorting & Selection State
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'name', direction: 'asc' });
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  // Default add form state
   const defaultForm = {
     name: '',
     npm: '',
@@ -38,15 +52,79 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
   };
   const [addForm, setAddForm] = useState<Partial<Student>>(defaultForm);
 
-  const filteredStudents = students.filter(s => 
-    s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    s.npm.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Filter and Sort Logic
+  const sortedAndFilteredStudents = useMemo(() => {
+    // 1. Filter
+    let result = students.filter(s => 
+        s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        s.npm.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+
+    // 2. Sort
+    if (sortConfig.key) {
+        result.sort((a, b) => {
+            const valA = (a[sortConfig.key!] || '').toString().toLowerCase();
+            const valB = (b[sortConfig.key!] || '').toString().toLowerCase();
+
+            if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+    }
+
+    return result;
+  }, [students, searchTerm, sortConfig]);
+
+  // Handlers
+  const handleSort = (key: SortKey) => {
+    setSortConfig(current => ({
+        key,
+        direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+        // Select all visible (filtered) students
+        setSelectedIds(new Set(sortedAndFilteredStudents.map(s => s.id)));
+    } else {
+        setSelectedIds(new Set());
+    }
+  };
+
+  const handleSelectOne = (id: string) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(id)) {
+        newSet.delete(id);
+    } else {
+        newSet.add(id);
+    }
+    setSelectedIds(newSet);
+  };
 
   const handleDelete = async (id: string) => {
     if (window.confirm('Apakah Anda yakin ingin menghapus data mahasiswa ini dari database cloud?')) {
       onDeleteStudent(id);
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
+  };
+
+  const handleBulkDelete = () => {
+     if (selectedIds.size === 0) return;
+     if (window.confirm(`Yakin ingin menghapus ${selectedIds.size} mahasiswa terpilih?`)) {
+        if (onDeleteStudents) {
+            onDeleteStudents(Array.from(selectedIds));
+            setSelectedIds(new Set());
+        } else {
+            // Fallback if prop not provided (though it should be)
+            selectedIds.forEach(id => onDeleteStudent(id));
+            setSelectedIds(new Set());
+        }
+     }
   };
 
   const startEdit = (student: Student) => {
@@ -107,16 +185,14 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
 
         const studentsToImport: Student[] = [];
         
-        let currentStudents = [...students];
-        const studentMap = new Map(currentStudents.map((s) => [s.npm.trim().toLowerCase(), s]));
+        // Use explicit map population to avoid type inference issues
+        const studentMap = new Map<string, Student>();
+        students.forEach(s => studentMap.set(s.npm.trim().toLowerCase(), s));
 
-        // Skip header row (start from i=1)
         for (let i = 1; i < jsonData.length; i++) {
             const cols = jsonData[i];
             if (!cols || cols.length === 0) continue;
 
-            // Mapping based on Template order:
-            // 0:Nama, 1:NPM, 2:Prodi, 3:Judul, 4:P1, 5:P2, 6:U1, 7:U2
             const excelData = {
                 name: cols[0] ? String(cols[0]).trim() : '',
                 npm: cols[1] ? String(cols[1]).trim() : '',
@@ -128,11 +204,9 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
                 penguji2: cols[7] ? String(cols[7]).trim() : ''
             };
 
-            if (!excelData.npm) continue; // Skip if no NPM
+            if (!excelData.npm) continue;
 
             const npmKey = excelData.npm.toLowerCase();
-
-            // Logic: If exist, we use the EXISTING ID to allow overwrite, otherwise generate new ID
             const existing = studentMap.get(npmKey);
             const idToUse = existing ? existing.id : `import-${Date.now()}-${i}`;
 
@@ -151,7 +225,6 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
         }
 
         if (studentsToImport.length > 0) {
-            // Trigger batch import in App.tsx
             onImportStudents(studentsToImport);
             alert(`Berhasil memproses ${studentsToImport.length} data. Sedang mengirim ke database...`);
         } else {
@@ -170,15 +243,53 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const downloadTemplate = () => {
+  const downloadDatabase = () => {
     const headers = ["Nama", "NPM", "Prodi", "Judul Skripsi", "Pembimbing 1", "Pembimbing 2", "Penguji 1", "Penguji 2"];
-    const data = [[ "Contoh Nama", "12345678", "K3", "Analisis Risiko K3", "Dosen A", "Dosen B", "Dosen C", "Dosen D"]];
+    
+    // Map existing students to array format
+    const data = students.map(s => [
+        s.name, 
+        s.npm, 
+        s.prodi, 
+        s.title, 
+        s.pembimbing1, 
+        s.pembimbing2, 
+        s.penguji1, 
+        s.penguji2
+    ]);
+
+    // If no students, add a placeholder example so the file isn't empty structure
+    if (data.length === 0) {
+        data.push([ "Contoh Nama", "12345678", "K3", "Analisis Risiko K3", "Dosen A", "Dosen B", "Dosen C", "Dosen D"]);
+    }
+
     const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
     ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 10 }, { wch: 40 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 20 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Database Mahasiswa");
-    XLSX.writeFile(wb, `Template_Database.xlsx`);
+    XLSX.writeFile(wb, `Database_Mahasiswa_Full.xlsx`);
   };
+
+  // Helper for Sort Icons
+  const SortIcon = ({ colKey }: { colKey: SortKey }) => {
+    if (sortConfig.key !== colKey) return <ArrowUpDown className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-50" />;
+    return sortConfig.direction === 'asc' 
+      ? <ArrowUp className="w-3 h-3 text-primary-600" />
+      : <ArrowDown className="w-3 h-3 text-primary-600" />;
+  };
+
+  // Helper for Header Cells
+  const HeaderCell = ({ label, colKey, className="" }: { label: string, colKey: SortKey, className?: string }) => (
+    <th 
+        className={`px-4 py-3 cursor-pointer group hover:bg-slate-100 select-none transition-colors ${className}`}
+        onClick={() => handleSort(colKey)}
+    >
+        <div className="flex items-center gap-1">
+            {label}
+            <SortIcon colKey={colKey} />
+        </div>
+    </th>
+  );
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[calc(100vh-10rem)]">
@@ -191,7 +302,9 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
           </h2>
           <p className="text-slate-500 text-sm">Data tersimpan aman dan realtime di server.</p>
         </div>
-        <div className="flex gap-2 w-full md:w-auto flex-wrap justify-end">
+        <div className="flex gap-2 w-full md:w-auto flex-wrap justify-end items-center">
+            
+          {/* Search */}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input 
@@ -203,11 +316,24 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
             />
           </div>
           
-          <button onClick={downloadTemplate} className="flex items-center gap-2 bg-white border border-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50">
+          {/* Bulk Delete Button */}
+          {selectedIds.size > 0 && (
+             <button 
+                onClick={handleBulkDelete}
+                className="flex items-center gap-2 bg-red-100 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-red-200 transition-colors"
+             >
+                <Trash2 className="w-4 h-4" />
+                Hapus ({selectedIds.size})
+             </button>
+          )}
+          
+          {/* Download DB Button */}
+          <button onClick={downloadDatabase} className="flex items-center gap-2 bg-white border border-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50" title="Download data existing ke Excel untuk diedit">
             <FileText className="w-4 h-4" />
-            Template
+            Download DB
           </button>
           
+          {/* Import Button */}
           <div className="relative">
              <input 
                type="file" 
@@ -289,23 +415,43 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
       {/* Table */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm text-left">
-          <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b sticky top-0">
+          <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b sticky top-0 z-10">
             <tr>
-              <th className="px-4 py-3">NPM</th>
-              <th className="px-4 py-3">Nama</th>
-              <th className="px-4 py-3">Prodi</th>
-              <th className="px-4 py-3">Judul</th>
-              <th className="px-4 py-3">Pembimbing</th>
-              <th className="px-4 py-3">Penguji</th>
+              <th className="px-3 py-3 w-8">
+                  <input 
+                    type="checkbox" 
+                    onChange={handleSelectAll}
+                    checked={sortedAndFilteredStudents.length > 0 && selectedIds.size === sortedAndFilteredStudents.length}
+                    className="w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                  />
+              </th>
+              <HeaderCell label="NPM" colKey="npm" />
+              <HeaderCell label="Nama" colKey="name" />
+              <HeaderCell label="Prodi" colKey="prodi" />
+              <HeaderCell label="Judul" colKey="title" />
+              <HeaderCell label="Pembimbing" colKey="pembimbing1" />
+              <HeaderCell label="Penguji" colKey="penguji1" />
               <th className="px-4 py-3 text-center">Aksi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {filteredStudents.length === 0 ? (
-               <tr><td colSpan={7} className="p-8 text-center text-slate-400">Tidak ada data ditemukan</td></tr>
+            {sortedAndFilteredStudents.length === 0 ? (
+               <tr><td colSpan={8} className="p-8 text-center text-slate-400">Tidak ada data ditemukan</td></tr>
             ) : (
-              filteredStudents.map((student) => (
-                <tr key={student.id} className="bg-white hover:bg-slate-50">
+              sortedAndFilteredStudents.map((student) => (
+                <tr key={student.id} className={`hover:bg-slate-50 ${selectedIds.has(student.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                   {/* Checkbox Column */}
+                   <td className="px-3 py-3">
+                        {isEditing !== student.id && (
+                             <input 
+                                type="checkbox" 
+                                checked={selectedIds.has(student.id)}
+                                onChange={() => handleSelectOne(student.id)}
+                                className="w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                            />
+                        )}
+                   </td>
+
                   {isEditing === student.id ? (
                     // Editing Mode
                     <>
@@ -366,9 +512,9 @@ const DatabaseView: React.FC<DatabaseViewProps> = ({
           </tbody>
         </table>
       </div>
-      <div className="bg-slate-50 p-3 border-t border-slate-200 text-xs text-slate-500 flex justify-between">
-        <span>Total: {filteredStudents.length} Mahasiswa (Sync Cloud)</span>
-        <span>Menampilkan hasil pencarian untuk "{searchTerm}"</span>
+      <div className="bg-slate-50 p-3 border-t border-slate-200 text-xs text-slate-500 flex justify-between items-center">
+        <span>Total: {sortedAndFilteredStudents.length} Mahasiswa (Sync Cloud)</span>
+        {selectedIds.size > 0 && <span className="font-semibold text-primary-600">{selectedIds.size} Dipilih</span>}
       </div>
     </div>
   );
