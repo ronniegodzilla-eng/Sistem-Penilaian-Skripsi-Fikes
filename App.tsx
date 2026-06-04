@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { GraduationCap, LayoutDashboard, Database, X, Lock, Home, PieChart, RefreshCw, WifiOff } from 'lucide-react';
-import { supabase, isDemoMode } from './supabaseClient';
+import { db, isDemoMode } from './firebase';
+import { collection, getDocs, query, orderBy, doc, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import HomeView from './components/HomeView';
 import SupervisorForm from './components/SupervisorForm';
 import ExaminerForm from './components/ExaminerForm';
@@ -37,7 +38,7 @@ const App: React.FC = () => {
   // --- DATA FETCHING (SUPABASE) ---
 
   const fetchData = useCallback(async () => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setStudents(INITIAL_STUDENTS.sort((a, b) => a.name.localeCompare(b.name)));
         setLoading(false);
         return;
@@ -45,26 +46,17 @@ const App: React.FC = () => {
 
     setLoading(true);
     try {
-        // Fetch Students
-        const { data: studentsData, error: studentsError } = await supabase
-            .from('students')
-            .select('*')
-            .order('name', { ascending: true });
-        
-        if (studentsError) throw studentsError;
+        const studentsSnap = await getDocs(query(collection(db, 'students'), orderBy('name', 'asc')));
+        const studentsData = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Student[];
 
-        // Fetch Assessments
-        const { data: assessmentsData, error: assessmentsError } = await supabase
-            .from('assessments')
-            .select('*');
+        const assessmentsSnap = await getDocs(collection(db, 'assessments'));
+        const assessmentsData = assessmentsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Assessment[];
 
-        if (assessmentsError) throw assessmentsError;
-
-        if (studentsData) setStudents(studentsData as Student[]);
-        if (assessmentsData) setAssessments(assessmentsData as Assessment[]);
+        if (studentsData) setStudents(studentsData);
+        if (assessmentsData) setAssessments(assessmentsData);
 
     } catch (error) {
-        console.error("Error fetching data from Supabase:", error);
+        console.error("Error fetching data from Firestore:", error);
         alert("Gagal mengambil data dari server. Mode Offline aktif.");
     } finally {
         setLoading(false);
@@ -86,7 +78,7 @@ const App: React.FC = () => {
   // --- SUPABASE ACTIONS ---
 
   const handleSaveAssessment = async (newAssessment: Assessment) => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setAssessments(prev => {
             const idx = prev.findIndex(a => a.id === newAssessment.id);
             if (idx !== -1) {
@@ -101,21 +93,17 @@ const App: React.FC = () => {
     }
 
     try {
-      const { error } = await supabase
-        .from('assessments')
-        .upsert(newAssessment);
-      
-      if (error) throw error;
+      await setDoc(doc(db, 'assessments', newAssessment.id), newAssessment as any);
       
       // Refresh local state
       fetchData();
     } catch (e: any) {
-      alert("Gagal menyimpan nilai ke Supabase: " + e.message);
+      alert("Gagal menyimpan nilai ke Firestore: " + e.message);
     }
   };
 
   const handleDeleteAssessments = async (studentIds: string[], type: ExamType) => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setAssessments(prev => prev.filter(a => !(studentIds.includes(a.studentId) && a.examType === type)));
         return;
     }
@@ -128,12 +116,11 @@ const App: React.FC = () => {
     if (idsToDelete.length === 0) return;
 
     try {
-      const { error } = await supabase
-        .from('assessments')
-        .delete()
-        .in('id', idsToDelete);
-
-      if (error) throw error;
+      const batch = writeBatch(db);
+      idsToDelete.forEach(id => {
+        batch.delete(doc(db, 'assessments', id));
+      });
+      await batch.commit();
 
       fetchData();
     } catch (e: any) {
@@ -144,17 +131,13 @@ const App: React.FC = () => {
   // --- CRUD Actions for DatabaseView ---
 
   const handleAddStudent = async (student: Student) => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setStudents(prev => [...prev, student].sort((a, b) => a.name.localeCompare(b.name)));
         return;
     }
 
     try {
-      const { error } = await supabase
-        .from('students')
-        .insert(student);
-      
-      if (error) throw error;
+      await setDoc(doc(db, 'students', student.id), student as any);
       fetchData();
     } catch (e: any) {
       console.error("Error adding student", e);
@@ -163,18 +146,13 @@ const App: React.FC = () => {
   };
 
   const handleUpdateStudent = async (student: Student) => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setStudents(prev => prev.map(s => s.id === student.id ? student : s));
         return;
     }
 
     try {
-      const { error } = await supabase
-        .from('students')
-        .update(student)
-        .eq('id', student.id);
-
-      if (error) throw error;
+      await updateDoc(doc(db, 'students', student.id), student as any);
       fetchData();
     } catch (e: any) {
       console.error("Error updating student", e);
@@ -183,18 +161,13 @@ const App: React.FC = () => {
   };
 
   const handleDeleteStudent = async (id: string) => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setStudents(prev => prev.filter(s => s.id !== id));
         return;
     }
 
     try {
-      const { error } = await supabase
-        .from('students')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await deleteDoc(doc(db, 'students', id));
       fetchData();
     } catch (e: any) {
       console.error("Error deleting student", e);
@@ -203,18 +176,17 @@ const App: React.FC = () => {
   };
 
   const handleDeleteStudents = async (ids: string[]) => {
-    if (isDemoMode || !supabase) {
+    if (isDemoMode || !db) {
         setStudents(prev => prev.filter(s => !ids.includes(s.id)));
         return;
     }
 
     try {
-      const { error } = await supabase
-        .from('students')
-        .delete()
-        .in('id', ids);
-
-      if (error) throw error;
+      const batch = writeBatch(db);
+      ids.forEach(id => {
+        batch.delete(doc(db, 'students', id));
+      });
+      await batch.commit();
       fetchData();
     } catch (e: any) {
       console.error("Error deleting students", e);
@@ -223,22 +195,38 @@ const App: React.FC = () => {
   };
 
   const handleImportStudents = async (newStudents: Student[]) => {
-    if (isDemoMode || !supabase) {
+    // Logic untuk Demo Mode / State Lokal
+    // Gunakan Map untuk menggabungkan data (Update jika ID sama, Insert jika baru)
+    if (isDemoMode || !db) {
         setStudents(prev => {
-             const combined = [...prev, ...newStudents];
-             return combined.sort((a, b) => a.name.localeCompare(b.name));
+             const studentMap = new Map(prev.map(s => [s.id, s]));
+             
+             newStudents.forEach(s => {
+                 // Karena DatabaseView sudah mengatur ID (menggunakan ID lama jika nama sama),
+                 // ini akan otomatis meng-overwrite data lama.
+                 studentMap.set(s.id, s);
+             });
+
+             return Array.from(studentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
         });
-        alert(`Mode Demo: ${newStudents.length} data ditambahkan.`);
+        alert(`Mode Demo: ${newStudents.length} data diproses (Overwrite/Insert).`);
         return;
     }
 
+    // Logic untuk Firestore (Online)
     try {
-      const { error } = await supabase
-        .from('students')
-        .upsert(newStudents);
-
-      if (error) throw error;
+      const chunkSize = 499;
+      for (let i = 0; i < newStudents.length; i += chunkSize) {
+        const chunk = newStudents.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(student => {
+          batch.set(doc(db, 'students', student.id), student as any);
+        });
+        await batch.commit();
+      }
+      
       fetchData();
+      alert(`Berhasil memproses ${newStudents.length} data. Data dengan nama sama telah diperbarui.`);
     } catch (e: any) {
       console.error("Error import", e);
       alert("Gagal import data: " + e.message);
@@ -273,7 +261,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-500 gap-2">
         <RefreshCw className="w-6 h-6 animate-spin" />
-        <span>Menghubungkan ke Supabase...</span>
+        <span>Menghubungkan ke Firebase...</span>
       </div>
     );
   }
@@ -368,7 +356,7 @@ const App: React.FC = () => {
       {isDemoMode && (
          <div className="bg-emerald-600 text-white text-xs font-bold text-center py-1 px-4 flex items-center justify-center gap-2">
             <WifiOff className="w-3 h-3" />
-            MODE DEMO (OFFLINE): Menggunakan data lokal. Setup Supabase (.env) untuk online database.
+            MODE DEMO (OFFLINE): Menggunakan data lokal. Setup Firebase (.env) untuk online database.
          </div>
       )}
 
